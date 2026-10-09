@@ -6,7 +6,10 @@ mod state;
 use fcm_receiver_rs::client::{AndroidApp, FcmClient};
 use format::normalize_raw_message;
 use serde_json::{json, Value};
-use state::{load_seen, load_state, remember_seen, save_seen, save_state, FcmState, STATE_FILE};
+use state::{
+    is_new_since_start, load_seen, load_state, now_ms, remember_seen, save_seen, save_state,
+    FcmState, STATE_FILE,
+};
 use std::{
     env,
     sync::{Arc, Mutex},
@@ -34,7 +37,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let discord_webhook_url = env_value("DISCORD_WEBHOOK_URL");
-    let webhook_url = required_env("WEBHOOK_URL");
+    let webhook_url = {
+        let value = env_value("WEBHOOK_URL");
+        if value.is_empty() {
+            env_value("QRIS_WEBHOOK_URL")
+        } else {
+            value
+        }
+    };
+    if webhook_url.is_empty() {
+        eprintln!("missing WEBHOOK_URL");
+        std::process::exit(2);
+    }
     let webhook_token = required_env("WEBHOOK_TOKEN");
 
     if cert.is_empty() {
@@ -45,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut client = FcmClient::new(api_key, app_id, project_id)?;
+    let process_started_ms = now_ms();
     client.android_app = Some(AndroidApp {
         gcm_sender_id,
         android_package: package,
@@ -116,6 +131,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let raw_seen = Arc::clone(&seen);
 
     client.on_raw_message = Some(Arc::new(move |msg| {
+        if !is_new_since_start(process_started_ms, msg.sent) {
+            println!(
+                "old_skipped sent={:?} persistent_id={}",
+                msg.sent,
+                msg.persistent_id.as_deref().unwrap_or("")
+            );
+            return;
+        }
+
         if let Some(pid) = msg.persistent_id.as_deref() {
             if !remember_seen(&raw_seen, pid) {
                 println!("duplicate_skipped persistent_id={pid}");

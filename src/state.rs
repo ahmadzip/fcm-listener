@@ -37,11 +37,27 @@ pub fn save_state(state: &FcmState) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn now_ms() -> u64 {
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+pub fn is_new_since_start(started_ms: u64, sent: Option<i64>) -> bool {
+    let Some(sent) = sent else { return true };
+    if sent <= 0 {
+        return true;
+    }
+
+    let sent = sent as u64;
+    let sent_ms = if sent < 10_000_000_000 {
+        sent.saturating_mul(1000)
+    } else {
+        sent
+    };
+
+    sent_ms > started_ms
 }
 
 fn prune_seen(mut items: Vec<SeenPersistentId>) -> Vec<SeenPersistentId> {
@@ -84,4 +100,17 @@ pub fn remember_seen(seen: &Arc<Mutex<Vec<SeenPersistentId>>>, id: &str) -> bool
     *items = prune_seen(std::mem::take(&mut *items));
     save_seen(&items);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_new_since_start;
+
+    #[test]
+    fn filters_messages_sent_before_process_start() {
+        assert!(!is_new_since_start(1_700_000_000_000, Some(1_699_999_999_999)));
+        assert!(!is_new_since_start(1_700_000_000_000, Some(1_700_000_000)));
+        assert!(is_new_since_start(1_700_000_000_000, Some(1_700_000_001)));
+        assert!(is_new_since_start(1_700_000_000_000, None));
+    }
 }
